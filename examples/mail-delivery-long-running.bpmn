@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_MailDelivery" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.0.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:process id="mail-delivery-long-running" name="Mail delivery (long-running external job)" isExecutable="true">
+    <bpmn:documentation>
+      Pattern: "fire and wait". A short job dispatches the long-running work and completes
+      immediately with a case id; the process then WAITS for days on a message. The postal
+      system publishes "mail-delivered" with correlationKey = caseId when it is done.
+      The correlation key only routes the message to the right instance - the outcome
+      (delivered / failed) travels in the message payload as the variable "deliveryStatus".
+    </bpmn:documentation>
+
+    <bpmn:startEvent id="Start_Request" name="Mail requested">
+      <bpmn:outgoing>Flow_1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="Task_DispatchMail" name="Dispatch mail delivery">
+      <bpmn:documentation>
+        External job (type: mail-dispatch). Keep it short: hand the letter to the postal
+        provider, create a tracking case id and COMPLETE the job with variables
+        caseId and deliveryStatus = "pending". Do not hold this job while the letter travels.
+      </bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="mail-dispatch" />
+        <zeebe:taskHeaders>
+          <zeebe:header key="provider" value="postal-service" />
+          <zeebe:header key="priority" value="standard" />
+        </zeebe:taskHeaders>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_2</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:receiveTask id="Task_AwaitDelivery" name="Await delivery confirmation" messageRef="Message_MailDelivered">
+      <bpmn:documentation>
+        Wait state - no lock is held here, so this can last days and survives restarts and
+        leader failover. The subscription is created with correlationKey = caseId.
+      </bpmn:documentation>
+      <bpmn:incoming>Flow_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_3</bpmn:outgoing>
+    </bpmn:receiveTask>
+
+    <bpmn:boundaryEvent id="Boundary_Reminder" name="3 days" attachedToRef="Task_AwaitDelivery" cancelActivity="false">
+      <bpmn:documentation>
+        Non-interrupting timer: after 3 days of waiting, send a reminder but keep waiting.
+        Set cancelActivity="true" for a hard timeout instead.
+      </bpmn:documentation>
+      <bpmn:outgoing>Flow_Remind</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDefinition_Reminder">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P3D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:exclusiveGateway id="Gateway_Delivered" name="Delivered?" default="Flow_Failed">
+      <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_Delivered</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Failed</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="Task_HandleFailure" name="Handle failed delivery">
+      <bpmn:documentation>
+        Outcome branch for deliveryStatus != "delivered" (e.g. returned to sender).
+      </bpmn:documentation>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="mail-handle-failure" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Failed</bpmn:incoming>
+      <bpmn:outgoing>Flow_FailedEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_RemindSender" name="Remind sender">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="mail-remind" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Remind</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReminderEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_Delivered" name="Mail delivered">
+      <bpmn:incoming>Flow_Delivered</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="End_Failed" name="Delivery failed">
+      <bpmn:incoming>Flow_FailedEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="End_ReminderSent" name="Reminder sent">
+      <bpmn:incoming>Flow_ReminderEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start_Request" targetRef="Task_DispatchMail" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_DispatchMail" targetRef="Task_AwaitDelivery" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_AwaitDelivery" targetRef="Gateway_Delivered" />
+    <bpmn:sequenceFlow id="Flow_Delivered" name="delivered" sourceRef="Gateway_Delivered" targetRef="End_Delivered">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=deliveryStatus = "delivered"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Failed" name="failed" sourceRef="Gateway_Delivered" targetRef="Task_HandleFailure" />
+    <bpmn:sequenceFlow id="Flow_FailedEnd" sourceRef="Task_HandleFailure" targetRef="End_Failed" />
+    <bpmn:sequenceFlow id="Flow_Remind" sourceRef="Boundary_Reminder" targetRef="Task_RemindSender" />
+    <bpmn:sequenceFlow id="Flow_ReminderEnd" sourceRef="Task_RemindSender" targetRef="End_ReminderSent" />
+  </bpmn:process>
+
+  <bpmn:message id="Message_MailDelivered" name="mail-delivered">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=caseId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="mail-delivery-long-running">
+      <bpmndi:BPMNShape id="Start_Request_di" bpmnElement="Start_Request">
+        <dc:Bounds x="160" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="139" y="245" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_DispatchMail_di" bpmnElement="Task_DispatchMail">
+        <dc:Bounds x="260" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AwaitDelivery_di" bpmnElement="Task_AwaitDelivery">
+        <dc:Bounds x="440" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_Reminder_di" bpmnElement="Boundary_Reminder">
+        <dc:Bounds x="472" y="260" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="512" y="273" width="39" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RemindSender_di" bpmnElement="Task_RemindSender">
+        <dc:Bounds x="440" y="360" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Delivered_di" bpmnElement="Gateway_Delivered" isMarkerVisible="true">
+        <dc:Bounds x="600" y="195" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="595" y="165" width="60" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_HandleFailure_di" bpmnElement="Task_HandleFailure">
+        <dc:Bounds x="700" y="330" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Delivered_di" bpmnElement="End_Delivered">
+        <dc:Bounds x="720" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="701" y="245" width="74" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Failed_di" bpmnElement="End_Failed">
+        <dc:Bounds x="860" y="352" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="838" y="395" width="81" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_ReminderSent_di" bpmnElement="End_ReminderSent">
+        <dc:Bounds x="472" y="480" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="450" y="523" width="81" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
+        <di:waypoint x="196" y="220" />
+        <di:waypoint x="260" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_2_di" bpmnElement="Flow_2">
+        <di:waypoint x="360" y="220" />
+        <di:waypoint x="440" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3">
+        <di:waypoint x="540" y="220" />
+        <di:waypoint x="600" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Delivered_di" bpmnElement="Flow_Delivered">
+        <di:waypoint x="650" y="220" />
+        <di:waypoint x="720" y="220" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="662" y="202" width="47" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Failed_di" bpmnElement="Flow_Failed">
+        <di:waypoint x="625" y="245" />
+        <di:waypoint x="625" y="370" />
+        <di:waypoint x="700" y="370" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="633" y="266" width="33" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FailedEnd_di" bpmnElement="Flow_FailedEnd">
+        <di:waypoint x="800" y="370" />
+        <di:waypoint x="860" y="370" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Remind_di" bpmnElement="Flow_Remind">
+        <di:waypoint x="490" y="296" />
+        <di:waypoint x="490" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReminderEnd_di" bpmnElement="Flow_ReminderEnd">
+        <di:waypoint x="490" y="440" />
+        <di:waypoint x="490" y="480" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

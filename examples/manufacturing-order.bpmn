@@ -1,0 +1,713 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_ManufacturingOrder" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.0.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:message id="Message_ShipConfirmed" name="shipment-confirmed">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=order.id" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:message id="Message_Breakdown" name="machine-breakdown" />
+  <bpmn:error id="Error_Machining" name="Machining failed" errorCode="MACHINING_FAILED" />
+  <bpmn:process id="manufacturing-production-order" name="Smart Factory - Production Order" isExecutable="true">
+    <bpmn:documentation>Complex manufacturing order-to-delivery process illustrating ZenBPM / Camunda 8 elements: parallel planning (call activity with multi-instance + parallel gateway), a user-task approval with a timer SLA, an expanded sub-process with an error end event caught by an error boundary, a non-interrupting timer reminder (send task), an interrupting quality-inspection timer, an inclusive gateway for optional finishing steps, and a message-driven shipment wait completed by an external carrier system. Extensions use the Camunda 8 zeebe: namespace, which ZenBPM also reads.</bpmn:documentation>
+    <bpmn:startEvent id="Start_Order" name="Production order received">
+      <bpmn:outgoing>Flow_Start_Validate</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="T_Validate" name="Validate production order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="validate-order" />
+        <zeebe:taskHeaders>
+          <zeebe:header key="erp" value="sap-ecc" />
+          <zeebe:header key="plant" value="PL-01" />
+        </zeebe:taskHeaders>
+        <zeebe:ioMapping>
+          <zeebe:input source="=order.id" target="orderId" />
+          <zeebe:output source="=validation.errorCount" target="validationErrors" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Start_Validate</bpmn:incoming>
+      <bpmn:outgoing>Flow_Validate_Feas</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:businessRuleTask id="T_Feasibility" name="Check feasibility">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:input source="=order.totalAmount" target="orderAmount" />
+          <zeebe:input source="=bom.components" target="components" />
+          <zeebe:output source="=feasibility" target="feasibility" />
+        </zeebe:ioMapping>
+        <zeebe:calledDecision decisionId="production_feasibility" resultVariable="feasibility" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Validate_Feas</bpmn:incoming>
+      <bpmn:outgoing>Flow_Feas_Gw</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="G_Feasible" name="Feasible?" default="Flow_NotFeasible">
+      <bpmn:incoming>Flow_Feas_Gw</bpmn:incoming>
+      <bpmn:outgoing>Flow_FeasibleYes</bpmn:outgoing>
+      <bpmn:outgoing>Flow_NotFeasible</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="T_Reject" name="Notify order rejection">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notify-rejection" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_NotFeasible</bpmn:incoming>
+      <bpmn:outgoing>Flow_Reject_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_Rejected" name="Order rejected">
+      <bpmn:incoming>Flow_Reject_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:parallelGateway id="G_Fork" name="Plan in parallel">
+      <bpmn:incoming>Flow_FeasibleYes</bpmn:incoming>
+      <bpmn:outgoing>Flow_Fork_Procure</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_Schedule</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_Approve</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:callActivity id="T_Procure" name="Procure components">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:input source="=component" target="component" />
+          <zeebe:input source="=order.id" target="orderId" />
+          <zeebe:output source="=poNumber" target="lastPurchaseOrder" />
+        </zeebe:ioMapping>
+        <zeebe:calledElement processId="procurement" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Fork_Procure</bpmn:incoming>
+      <bpmn:outgoing>Flow_Procure_Join</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=bom.components" inputElement="component" />
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:callActivity>
+    <bpmn:serviceTask id="T_Schedule" name="Compute production schedule">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="compute-schedule" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=order.id" target="orderId" />
+          <zeebe:input source="=bom" target="bom" />
+          <zeebe:output source="=schedule.id" target="scheduleId" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Fork_Schedule</bpmn:incoming>
+      <bpmn:outgoing>Flow_Schedule_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="T_ApproveSchedule" name="Approve schedule">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition assignee="=planner.id" candidateGroups="production-planners" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=scheduleId" target="scheduleId" />
+          <zeebe:output source="=approved" target="scheduleApproved" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Fork_Approve</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approve_Join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="B_Timer_Approve" name="24h SLA" attachedToRef="T_ApproveSchedule" cancelActivity="true">
+      <bpmn:outgoing>Flow_Approve_Esc</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_B_Timer_Approve">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT24H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="T_EscalateSchedule" name="Escalate to plant manager">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="escalate-schedule" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Approve_Esc</bpmn:incoming>
+      <bpmn:outgoing>Flow_Esc_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_ScheduleEscalated" name="Schedule escalated">
+      <bpmn:incoming>Flow_Esc_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:parallelGateway id="G_Join" name="Planning complete">
+      <bpmn:incoming>Flow_Procure_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Schedule_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Approve_Join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Join_Mfg</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:subProcess id="Sub_Mfg" name="Manufacture product">
+      <bpmn:documentation>Machining and assembly of the batch.</bpmn:documentation>
+      <bpmn:incoming>Flow_Join_Mfg</bpmn:incoming>
+      <bpmn:outgoing>Flow_Mfg_Quality</bpmn:outgoing>
+      <bpmn:startEvent id="Start_Mfg" name="Start">
+        <bpmn:outgoing>Flow_MfgStart_Machine</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="T_Machine" name="Machine parts">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="machine-parts" />
+          <zeebe:ioMapping>
+            <zeebe:output source="=machining.ok" target="machiningOk" />
+          </zeebe:ioMapping>
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_MfgStart_Machine</bpmn:incoming>
+        <bpmn:outgoing>Flow_Machine_Gw</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="G_MachineOk" name="Machining ok?" default="Flow_MachineFail">
+        <bpmn:incoming>Flow_Machine_Gw</bpmn:incoming>
+        <bpmn:outgoing>Flow_MachineOk_Assemble</bpmn:outgoing>
+        <bpmn:outgoing>Flow_MachineFail</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:endEvent id="End_MfgError" name="Machining failed">
+        <bpmn:incoming>Flow_MachineFail</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:serviceTask id="T_Assemble" name="Assemble product">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="assemble-product" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_MachineOk_Assemble</bpmn:incoming>
+        <bpmn:outgoing>Flow_Assemble_End</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="End_Mfg" name="Batch manufactured">
+        <bpmn:incoming>Flow_Assemble_End</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_MfgStart_Machine" sourceRef="Start_Mfg" targetRef="T_Machine" />
+      <bpmn:sequenceFlow id="Flow_Machine_Gw" sourceRef="T_Machine" targetRef="G_MachineOk" />
+      <bpmn:sequenceFlow id="Flow_MachineOk_Assemble" sourceRef="G_MachineOk" targetRef="T_Assemble">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=machiningOk = true</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_MachineFail" sourceRef="G_MachineOk" targetRef="End_MfgError" />
+      <bpmn:sequenceFlow id="Flow_Assemble_End" sourceRef="T_Assemble" targetRef="End_Mfg" />
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="B_Err_Mfg" name="Machining failed" attachedToRef="Sub_Mfg" cancelActivity="true">
+      <bpmn:outgoing>Flow_MfgErr_Rework</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrDef_B_Err_Mfg" errorRef="Error_Machining" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="T_Rework" name="Rework order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="rework-order" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_MfgErr_Rework</bpmn:incoming>
+      <bpmn:outgoing>Flow_Rework_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_Reworked" name="Order reworked">
+      <bpmn:incoming>Flow_Rework_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="B_Timer_Mfg" name="4h status reminder" attachedToRef="Sub_Mfg" cancelActivity="false">
+      <bpmn:outgoing>Flow_ShiftTimer_Notify</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_B_Timer_Mfg">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT4H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="T_NotifyShift" name="Notify shift lead">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notify-shift-lead" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ShiftTimer_Notify</bpmn:incoming>
+      <bpmn:outgoing>Flow_Notify_End</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_ShiftNotified" name="Shift lead notified">
+      <bpmn:incoming>Flow_Notify_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:userTask id="T_Quality" name="Quality inspection">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition candidateGroups="quality-inspectors" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=order.id" target="batchId" />
+          <zeebe:output source="=inspection.passed" target="inspectionPassed" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Mfg_Quality</bpmn:incoming>
+      <bpmn:outgoing>Flow_Quality_Gw</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="B_Timer_QC" name="2d QC SLA" attachedToRef="T_Quality" cancelActivity="true">
+      <bpmn:outgoing>Flow_QC_Esc</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_B_Timer_QC">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P2D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="T_EscalateQC" name="Escalate quality issue">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="escalate-quality" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_QC_Esc</bpmn:incoming>
+      <bpmn:outgoing>Flow_QCEsc_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_QCEscalated" name="QC escalated">
+      <bpmn:incoming>Flow_QCEsc_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:exclusiveGateway id="G_Inspection" name="Inspection passed?" default="Flow_Quarantine">
+      <bpmn:incoming>Flow_Quality_Gw</bpmn:incoming>
+      <bpmn:outgoing>Flow_InspectionPass</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Quarantine</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="T_Quarantine" name="Quarantine batch">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="quarantine-batch" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Quarantine</bpmn:incoming>
+      <bpmn:outgoing>Flow_Quar_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_Quarantined" name="Batch quarantined">
+      <bpmn:incoming>Flow_Quar_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:inclusiveGateway id="G_Opt" name="Optional finishing?" default="Flow_OptDefault">
+      <bpmn:incoming>Flow_InspectionPass</bpmn:incoming>
+      <bpmn:outgoing>Flow_Opt_Label</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Opt_Docs</bpmn:outgoing>
+      <bpmn:outgoing>Flow_OptDefault</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:serviceTask id="T_Label" name="Print labels">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="print-labels" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Opt_Label</bpmn:incoming>
+      <bpmn:outgoing>Flow_Label_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="T_Docs" name="Prepare documentation">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="prepare-docs" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Opt_Docs</bpmn:incoming>
+      <bpmn:outgoing>Flow_Docs_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:inclusiveGateway id="G_OptJoin" name="Finishing done">
+      <bpmn:incoming>Flow_OptDefault</bpmn:incoming>
+      <bpmn:incoming>Flow_Label_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Docs_Join</bpmn:incoming>
+      <bpmn:outgoing>Flow_OptJoin_Package</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:serviceTask id="T_Package" name="Package goods">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="package-goods" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_OptJoin_Package</bpmn:incoming>
+      <bpmn:outgoing>Flow_Package_Ship</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="T_Ship" name="Dispatch shipment">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="dispatch-shipment" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Package_Ship</bpmn:incoming>
+      <bpmn:outgoing>Flow_Ship_Confirm</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="RT_ShipConfirm" name="Await shipment confirmation" messageRef="Message_ShipConfirmed">
+      <bpmn:incoming>Flow_Ship_Confirm</bpmn:incoming>
+      <bpmn:outgoing>Flow_Confirm_End</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:boundaryEvent id="B_Timer_Chase" name="2d chase" attachedToRef="RT_ShipConfirm" cancelActivity="false">
+      <bpmn:outgoing>Flow_ChaseTimer</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_B_Timer_Chase">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P2D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="T_Chase" name="Chase carrier">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="chase-carrier" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ChaseTimer</bpmn:incoming>
+      <bpmn:outgoing>Flow_Chase_End</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_CarrierChased" name="Carrier chased">
+      <bpmn:incoming>Flow_Chase_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="End_Completed" name="Production order completed">
+      <bpmn:incoming>Flow_Confirm_End</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="ES_Breakdown" name="Machine breakdown handling" triggeredByEvent="true">
+      <bpmn:documentation>Non-interrupting: a breakdown can be reported at any time without cancelling the running job.</bpmn:documentation>
+      <bpmn:startEvent id="Start_ES" name="Breakdown reported" isInterrupting="false">
+        <bpmn:outgoing>Flow_ES_1</bpmn:outgoing>
+        <bpmn:messageEventDefinition id="MsgDef_Start_ES" messageRef="Message_Breakdown" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="T_Reroute" name="Reroute production">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="reroute-production" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_ES_1</bpmn:incoming>
+        <bpmn:outgoing>Flow_ES_2</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="End_ES" name="Production rerouted">
+        <bpmn:incoming>Flow_ES_2</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_ES_1" sourceRef="Start_ES" targetRef="T_Reroute" />
+      <bpmn:sequenceFlow id="Flow_ES_2" sourceRef="T_Reroute" targetRef="End_ES" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_Start_Validate" sourceRef="Start_Order" targetRef="T_Validate" />
+    <bpmn:sequenceFlow id="Flow_Validate_Feas" sourceRef="T_Validate" targetRef="T_Feasibility" />
+    <bpmn:sequenceFlow id="Flow_Feas_Gw" sourceRef="T_Feasibility" targetRef="G_Feasible" />
+    <bpmn:sequenceFlow id="Flow_FeasibleYes" sourceRef="G_Feasible" targetRef="G_Fork">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=feasibility.feasible = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_NotFeasible" sourceRef="G_Feasible" targetRef="T_Reject" />
+    <bpmn:sequenceFlow id="Flow_Reject_End" sourceRef="T_Reject" targetRef="End_Rejected" />
+    <bpmn:sequenceFlow id="Flow_Fork_Procure" sourceRef="G_Fork" targetRef="T_Procure" />
+    <bpmn:sequenceFlow id="Flow_Fork_Schedule" sourceRef="G_Fork" targetRef="T_Schedule" />
+    <bpmn:sequenceFlow id="Flow_Fork_Approve" sourceRef="G_Fork" targetRef="T_ApproveSchedule" />
+    <bpmn:sequenceFlow id="Flow_Procure_Join" sourceRef="T_Procure" targetRef="G_Join" />
+    <bpmn:sequenceFlow id="Flow_Schedule_Join" sourceRef="T_Schedule" targetRef="G_Join" />
+    <bpmn:sequenceFlow id="Flow_Approve_Join" sourceRef="T_ApproveSchedule" targetRef="G_Join" />
+    <bpmn:sequenceFlow id="Flow_Approve_Esc" sourceRef="B_Timer_Approve" targetRef="T_EscalateSchedule" />
+    <bpmn:sequenceFlow id="Flow_Esc_End" sourceRef="T_EscalateSchedule" targetRef="End_ScheduleEscalated" />
+    <bpmn:sequenceFlow id="Flow_Join_Mfg" sourceRef="G_Join" targetRef="Sub_Mfg" />
+    <bpmn:sequenceFlow id="Flow_MfgErr_Rework" sourceRef="B_Err_Mfg" targetRef="T_Rework" />
+    <bpmn:sequenceFlow id="Flow_Rework_End" sourceRef="T_Rework" targetRef="End_Reworked" />
+    <bpmn:sequenceFlow id="Flow_ShiftTimer_Notify" sourceRef="B_Timer_Mfg" targetRef="T_NotifyShift" />
+    <bpmn:sequenceFlow id="Flow_Notify_End" sourceRef="T_NotifyShift" targetRef="End_ShiftNotified" />
+    <bpmn:sequenceFlow id="Flow_Mfg_Quality" sourceRef="Sub_Mfg" targetRef="T_Quality" />
+    <bpmn:sequenceFlow id="Flow_QC_Esc" sourceRef="B_Timer_QC" targetRef="T_EscalateQC" />
+    <bpmn:sequenceFlow id="Flow_QCEsc_End" sourceRef="T_EscalateQC" targetRef="End_QCEscalated" />
+    <bpmn:sequenceFlow id="Flow_Quality_Gw" sourceRef="T_Quality" targetRef="G_Inspection" />
+    <bpmn:sequenceFlow id="Flow_InspectionPass" sourceRef="G_Inspection" targetRef="G_Opt">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=inspectionPassed = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Quarantine" sourceRef="G_Inspection" targetRef="T_Quarantine" />
+    <bpmn:sequenceFlow id="Flow_Quar_End" sourceRef="T_Quarantine" targetRef="End_Quarantined" />
+    <bpmn:sequenceFlow id="Flow_Opt_Label" sourceRef="G_Opt" targetRef="T_Label">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=needsLabel</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Opt_Docs" sourceRef="G_Opt" targetRef="T_Docs">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=needsDocs</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_OptDefault" sourceRef="G_Opt" targetRef="G_OptJoin" />
+    <bpmn:sequenceFlow id="Flow_Label_Join" sourceRef="T_Label" targetRef="G_OptJoin" />
+    <bpmn:sequenceFlow id="Flow_Docs_Join" sourceRef="T_Docs" targetRef="G_OptJoin" />
+    <bpmn:sequenceFlow id="Flow_OptJoin_Package" sourceRef="G_OptJoin" targetRef="T_Package" />
+    <bpmn:sequenceFlow id="Flow_Package_Ship" sourceRef="T_Package" targetRef="T_Ship" />
+    <bpmn:sequenceFlow id="Flow_Ship_Confirm" sourceRef="T_Ship" targetRef="RT_ShipConfirm" />
+    <bpmn:sequenceFlow id="Flow_ChaseTimer" sourceRef="B_Timer_Chase" targetRef="T_Chase" />
+    <bpmn:sequenceFlow id="Flow_Chase_End" sourceRef="T_Chase" targetRef="End_CarrierChased" />
+    <bpmn:sequenceFlow id="Flow_Confirm_End" sourceRef="RT_ShipConfirm" targetRef="End_Completed" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="manufacturing-production-order">
+      <bpmndi:BPMNShape id="Start_Order_di" bpmnElement="Start_Order">
+        <dc:Bounds x="102" y="282" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Validate_di" bpmnElement="T_Validate">
+        <dc:Bounds x="230" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Feasibility_di" bpmnElement="T_Feasibility">
+        <dc:Bounds x="410" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_Feasible_di" bpmnElement="G_Feasible">
+        <dc:Bounds x="595" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Reject_di" bpmnElement="T_Reject">
+        <dc:Bounds x="570" y="460" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Rejected_di" bpmnElement="End_Rejected">
+        <dc:Bounds x="602" y="622" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_Fork_di" bpmnElement="G_Fork">
+        <dc:Bounds x="735" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Procure_di" bpmnElement="T_Procure">
+        <dc:Bounds x="930" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Schedule_di" bpmnElement="T_Schedule">
+        <dc:Bounds x="930" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_ApproveSchedule_di" bpmnElement="T_ApproveSchedule">
+        <dc:Bounds x="930" y="460" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="B_Timer_Approve_di" bpmnElement="B_Timer_Approve">
+        <dc:Bounds x="962" y="522" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_EscalateSchedule_di" bpmnElement="T_EscalateSchedule">
+        <dc:Bounds x="930" y="620" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_ScheduleEscalated_di" bpmnElement="End_ScheduleEscalated">
+        <dc:Bounds x="962" y="762" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_Join_di" bpmnElement="G_Join">
+        <dc:Bounds x="1175" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Sub_Mfg_di" bpmnElement="Sub_Mfg" isExpanded="true">
+        <dc:Bounds x="1280" y="170" width="440" height="260" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="B_Err_Mfg_di" bpmnElement="B_Err_Mfg">
+        <dc:Bounds x="1482" y="412" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Rework_di" bpmnElement="T_Rework">
+        <dc:Bounds x="1450" y="520" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Reworked_di" bpmnElement="End_Reworked">
+        <dc:Bounds x="1482" y="662" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="B_Timer_Mfg_di" bpmnElement="B_Timer_Mfg">
+        <dc:Bounds x="1482" y="152" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_NotifyShift_di" bpmnElement="T_NotifyShift">
+        <dc:Bounds x="1720" y="50" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_ShiftNotified_di" bpmnElement="End_ShiftNotified">
+        <dc:Bounds x="1932" y="72" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Quality_di" bpmnElement="T_Quality">
+        <dc:Bounds x="1830" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="B_Timer_QC_di" bpmnElement="B_Timer_QC">
+        <dc:Bounds x="1862" y="322" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_EscalateQC_di" bpmnElement="T_EscalateQC">
+        <dc:Bounds x="1830" y="420" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_QCEscalated_di" bpmnElement="End_QCEscalated">
+        <dc:Bounds x="1862" y="562" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_Inspection_di" bpmnElement="G_Inspection">
+        <dc:Bounds x="2015" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Quarantine_di" bpmnElement="T_Quarantine">
+        <dc:Bounds x="1990" y="420" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Quarantined_di" bpmnElement="End_Quarantined">
+        <dc:Bounds x="2022" y="562" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_Opt_di" bpmnElement="G_Opt">
+        <dc:Bounds x="2175" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Label_di" bpmnElement="T_Label">
+        <dc:Bounds x="2310" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Docs_di" bpmnElement="T_Docs">
+        <dc:Bounds x="2310" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_OptJoin_di" bpmnElement="G_OptJoin">
+        <dc:Bounds x="2495" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Package_di" bpmnElement="T_Package">
+        <dc:Bounds x="2630" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Ship_di" bpmnElement="T_Ship">
+        <dc:Bounds x="2790" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RT_ShipConfirm_di" bpmnElement="RT_ShipConfirm">
+        <dc:Bounds x="2950" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="B_Timer_Chase_di" bpmnElement="B_Timer_Chase">
+        <dc:Bounds x="2982" y="322" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Chase_di" bpmnElement="T_Chase">
+        <dc:Bounds x="2950" y="420" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_CarrierChased_di" bpmnElement="End_CarrierChased">
+        <dc:Bounds x="2982" y="562" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Completed_di" bpmnElement="End_Completed">
+        <dc:Bounds x="3142" y="282" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_Mfg_di" bpmnElement="Start_Mfg">
+        <dc:Bounds x="1302" y="282" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Machine_di" bpmnElement="T_Machine">
+        <dc:Bounds x="1390" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="G_MachineOk_di" bpmnElement="G_MachineOk">
+        <dc:Bounds x="1530" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_MfgError_di" bpmnElement="End_MfgError">
+        <dc:Bounds x="1537" y="382" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Assemble_di" bpmnElement="T_Assemble">
+        <dc:Bounds x="1610" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Mfg_di" bpmnElement="End_Mfg">
+        <dc:Bounds x="1642" y="382" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ES_Breakdown_di" bpmnElement="ES_Breakdown" isExpanded="true">
+        <dc:Bounds x="120" y="760" width="460" height="180" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_ES_di" bpmnElement="Start_ES">
+        <dc:Bounds x="222" y="832" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_Reroute_di" bpmnElement="T_Reroute">
+        <dc:Bounds x="350" y="810" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_ES_di" bpmnElement="End_ES">
+        <dc:Bounds x="522" y="832" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Validate_di" bpmnElement="Flow_Start_Validate">
+        <di:waypoint x="138" y="300" />
+        <di:waypoint x="230" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Validate_Feas_di" bpmnElement="Flow_Validate_Feas">
+        <di:waypoint x="330" y="300" />
+        <di:waypoint x="410" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Feas_Gw_di" bpmnElement="Flow_Feas_Gw">
+        <di:waypoint x="510" y="300" />
+        <di:waypoint x="595" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FeasibleYes_di" bpmnElement="Flow_FeasibleYes">
+        <di:waypoint x="645" y="300" />
+        <di:waypoint x="735" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotFeasible_di" bpmnElement="Flow_NotFeasible">
+        <di:waypoint x="620" y="325" />
+        <di:waypoint x="620" y="460" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Reject_End_di" bpmnElement="Flow_Reject_End">
+        <di:waypoint x="620" y="540" />
+        <di:waypoint x="620" y="622" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_Procure_di" bpmnElement="Flow_Fork_Procure">
+        <di:waypoint x="760" y="275" />
+        <di:waypoint x="760" y="227.5" />
+        <di:waypoint x="980" y="227.5" />
+        <di:waypoint x="980" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_Schedule_di" bpmnElement="Flow_Fork_Schedule">
+        <di:waypoint x="785" y="300" />
+        <di:waypoint x="930" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_Approve_di" bpmnElement="Flow_Fork_Approve">
+        <di:waypoint x="760" y="325" />
+        <di:waypoint x="760" y="392.5" />
+        <di:waypoint x="980" y="392.5" />
+        <di:waypoint x="980" y="460" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Procure_Join_di" bpmnElement="Flow_Procure_Join">
+        <di:waypoint x="1030" y="140" />
+        <di:waypoint x="1102.5" y="140" />
+        <di:waypoint x="1102.5" y="300" />
+        <di:waypoint x="1175" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Schedule_Join_di" bpmnElement="Flow_Schedule_Join">
+        <di:waypoint x="1030" y="300" />
+        <di:waypoint x="1175" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approve_Join_di" bpmnElement="Flow_Approve_Join">
+        <di:waypoint x="1030" y="500" />
+        <di:waypoint x="1102.5" y="500" />
+        <di:waypoint x="1102.5" y="300" />
+        <di:waypoint x="1175" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approve_Esc_di" bpmnElement="Flow_Approve_Esc">
+        <di:waypoint x="980" y="558" />
+        <di:waypoint x="980" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Esc_End_di" bpmnElement="Flow_Esc_End">
+        <di:waypoint x="980" y="700" />
+        <di:waypoint x="980" y="762" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Join_Mfg_di" bpmnElement="Flow_Join_Mfg">
+        <di:waypoint x="1225" y="300" />
+        <di:waypoint x="1280" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MfgErr_Rework_di" bpmnElement="Flow_MfgErr_Rework">
+        <di:waypoint x="1500" y="448" />
+        <di:waypoint x="1500" y="520" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Rework_End_di" bpmnElement="Flow_Rework_End">
+        <di:waypoint x="1500" y="600" />
+        <di:waypoint x="1500" y="662" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ShiftTimer_Notify_di" bpmnElement="Flow_ShiftTimer_Notify">
+        <di:waypoint x="1518" y="170" />
+        <di:waypoint x="1619" y="170" />
+        <di:waypoint x="1619" y="90" />
+        <di:waypoint x="1720" y="90" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Notify_End_di" bpmnElement="Flow_Notify_End">
+        <di:waypoint x="1820" y="90" />
+        <di:waypoint x="1932" y="90" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Mfg_Quality_di" bpmnElement="Flow_Mfg_Quality">
+        <di:waypoint x="1720" y="300" />
+        <di:waypoint x="1830" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_QC_Esc_di" bpmnElement="Flow_QC_Esc">
+        <di:waypoint x="1880" y="358" />
+        <di:waypoint x="1880" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_QCEsc_End_di" bpmnElement="Flow_QCEsc_End">
+        <di:waypoint x="1880" y="500" />
+        <di:waypoint x="1880" y="562" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Quality_Gw_di" bpmnElement="Flow_Quality_Gw">
+        <di:waypoint x="1930" y="300" />
+        <di:waypoint x="2015" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_InspectionPass_di" bpmnElement="Flow_InspectionPass">
+        <di:waypoint x="2065" y="300" />
+        <di:waypoint x="2175" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Quarantine_di" bpmnElement="Flow_Quarantine">
+        <di:waypoint x="2040" y="325" />
+        <di:waypoint x="2040" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Quar_End_di" bpmnElement="Flow_Quar_End">
+        <di:waypoint x="2040" y="500" />
+        <di:waypoint x="2040" y="562" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Opt_Label_di" bpmnElement="Flow_Opt_Label">
+        <di:waypoint x="2225" y="300" />
+        <di:waypoint x="2267.5" y="300" />
+        <di:waypoint x="2267.5" y="180" />
+        <di:waypoint x="2310" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Opt_Docs_di" bpmnElement="Flow_Opt_Docs">
+        <di:waypoint x="2225" y="300" />
+        <di:waypoint x="2267.5" y="300" />
+        <di:waypoint x="2267.5" y="420" />
+        <di:waypoint x="2310" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_OptDefault_di" bpmnElement="Flow_OptDefault">
+        <di:waypoint x="2225" y="300" />
+        <di:waypoint x="2495" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Label_Join_di" bpmnElement="Flow_Label_Join">
+        <di:waypoint x="2410" y="180" />
+        <di:waypoint x="2452.5" y="180" />
+        <di:waypoint x="2452.5" y="300" />
+        <di:waypoint x="2495" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Docs_Join_di" bpmnElement="Flow_Docs_Join">
+        <di:waypoint x="2410" y="420" />
+        <di:waypoint x="2452.5" y="420" />
+        <di:waypoint x="2452.5" y="300" />
+        <di:waypoint x="2495" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_OptJoin_Package_di" bpmnElement="Flow_OptJoin_Package">
+        <di:waypoint x="2545" y="300" />
+        <di:waypoint x="2630" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Package_Ship_di" bpmnElement="Flow_Package_Ship">
+        <di:waypoint x="2730" y="300" />
+        <di:waypoint x="2790" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Ship_Confirm_di" bpmnElement="Flow_Ship_Confirm">
+        <di:waypoint x="2890" y="300" />
+        <di:waypoint x="2950" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChaseTimer_di" bpmnElement="Flow_ChaseTimer">
+        <di:waypoint x="3000" y="358" />
+        <di:waypoint x="3000" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Chase_End_di" bpmnElement="Flow_Chase_End">
+        <di:waypoint x="3000" y="500" />
+        <di:waypoint x="3000" y="562" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Confirm_End_di" bpmnElement="Flow_Confirm_End">
+        <di:waypoint x="3050" y="300" />
+        <di:waypoint x="3142" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MfgStart_Machine_di" bpmnElement="Flow_MfgStart_Machine">
+        <di:waypoint x="1338" y="300" />
+        <di:waypoint x="1390" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Machine_Gw_di" bpmnElement="Flow_Machine_Gw">
+        <di:waypoint x="1490" y="300" />
+        <di:waypoint x="1530" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MachineOk_Assemble_di" bpmnElement="Flow_MachineOk_Assemble">
+        <di:waypoint x="1580" y="300" />
+        <di:waypoint x="1610" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MachineFail_di" bpmnElement="Flow_MachineFail">
+        <di:waypoint x="1555" y="325" />
+        <di:waypoint x="1555" y="382" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Assemble_End_di" bpmnElement="Flow_Assemble_End">
+        <di:waypoint x="1660" y="340" />
+        <di:waypoint x="1660" y="382" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ES_1_di" bpmnElement="Flow_ES_1">
+        <di:waypoint x="258" y="850" />
+        <di:waypoint x="350" y="850" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ES_2_di" bpmnElement="Flow_ES_2">
+        <di:waypoint x="450" y="850" />
+        <di:waypoint x="522" y="850" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

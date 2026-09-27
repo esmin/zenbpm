@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/" xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/" xmlns:zenbpm="http://zenbpm.pbinitiative.org/1.0" id="manufacturing-feasibility" name="Production feasibility" namespace="http://zenbpm.example/manufacturing" exporter="Camunda Modeler" exporterVersion="5.0.0">
+  <decision id="production_feasibility" name="Production feasibility">
+    <decisionTable id="DecisionTable_Feasibility" hitPolicy="FIRST">
+      <input id="Input_OrderAmount" label="Order amount">
+        <inputExpression id="InputExpression_OrderAmount" typeRef="number">
+          <text>orderAmount</text>
+        </inputExpression>
+      </input>
+      <input id="Input_ComponentCount" label="Component count">
+        <inputExpression id="InputExpression_ComponentCount" typeRef="number">
+          <text>count(components)</text>
+        </inputExpression>
+      </input>
+      <output id="Output_Feasible" label="Feasible" name="feasible" typeRef="boolean" />
+      <output id="Output_Reason" label="Reason" name="reason" typeRef="string" />
+      <output id="Output_LeadTime" label="Lead time (days)" name="leadTimeDays" typeRef="number" />
+      <rule id="Rule_PlantCapacity">
+        <inputEntry id="UE_PlantCapacity_Amount">
+          <text>&gt;= 1000000</text>
+        </inputEntry>
+        <inputEntry id="UE_PlantCapacity_Count">
+          <text></text>
+        </inputEntry>
+        <outputEntry id="OE_PlantCapacity_Feasible">
+          <text>false</text>
+        </outputEntry>
+        <outputEntry id="OE_PlantCapacity_Reason">
+          <text>"order exceeds plant capacity"</text>
+        </outputEntry>
+        <outputEntry id="OE_PlantCapacity_LeadTime">
+          <text>0</text>
+        </outputEntry>
+      </rule>
+      <rule id="Rule_ComponentComplexity">
+        <inputEntry id="UE_ComponentComplexity_Amount">
+          <text></text>
+        </inputEntry>
+        <inputEntry id="UE_ComponentComplexity_Count">
+          <text>&gt; 50</text>
+        </inputEntry>
+        <outputEntry id="OE_ComponentComplexity_Feasible">
+          <text>false</text>
+        </outputEntry>
+        <outputEntry id="OE_ComponentComplexity_Reason">
+          <text>"too many components for a single line"</text>
+        </outputEntry>
+        <outputEntry id="OE_ComponentComplexity_LeadTime">
+          <text>0</text>
+        </outputEntry>
+      </rule>
+      <rule id="Rule_Default">
+        <inputEntry id="UE_Default_Amount">
+          <text></text>
+        </inputEntry>
+        <inputEntry id="UE_Default_Count">
+          <text></text>
+        </inputEntry>
+        <outputEntry id="OE_Default_Feasible">
+          <text>true</text>
+        </outputEntry>
+        <outputEntry id="OE_Default_Reason">
+          <text>"within plant capacity"</text>
+        </outputEntry>
+        <outputEntry id="OE_Default_LeadTime">
+          <text>14</text>
+        </outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_1">
+      <dmndi:DMNShape id="DMNShape_1" dmnElementRef="production_feasibility">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

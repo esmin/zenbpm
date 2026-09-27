@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_Procurement" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.0.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.6.0">
+  <bpmn:process id="procurement" name="Procurement" isExecutable="true">
+    <bpmn:documentation>Called by the manufacturing process (call activity, one instance per BOM component). Raises a purchase order, gets it approved, and sends it to the supplier. Exposes poNumber to the caller via the call activity output mapping.</bpmn:documentation>
+    <bpmn:startEvent id="Start_Proc" name="Component to procure">
+      <bpmn:outgoing>Flow_P1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="T_CreatePO" name="Create purchase order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="create-purchase-order" />
+        <zeebe:taskHeaders>
+          <zeebe:header key="currency" value="EUR" />
+          <zeebe:header key="supplier" value="preferred-list" />
+        </zeebe:taskHeaders>
+        <zeebe:ioMapping>
+          <zeebe:input source="=component" target="component" />
+          <zeebe:input source="=orderId" target="orderId" />
+          <zeebe:output source="=poNumber" target="poNumber" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_P1</bpmn:incoming>
+      <bpmn:outgoing>Flow_P2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="T_ApprovePO" name="Approve purchase order">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition candidateGroups="production-buyers" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=poNumber" target="poNumber" />
+          <zeebe:output source="=approved" target="poApproved" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_P2</bpmn:incoming>
+      <bpmn:outgoing>Flow_P3</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="B_Timer_PO" name="2d approval SLA" attachedToRef="T_ApprovePO" cancelActivity="true">
+      <bpmn:outgoing>Flow_P4</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_B_Timer_PO">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P2D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="T_EscalatePO" name="Escalate to head of procurement">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="escalate-procurement" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_P4</bpmn:incoming>
+      <bpmn:outgoing>Flow_P5</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_ProcEscalated" name="Procurement escalated">
+      <bpmn:incoming>Flow_P5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sendTask id="T_SendPO" name="Send purchase order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-purchase-order" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_P3</bpmn:incoming>
+      <bpmn:outgoing>Flow_P6</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="End_Proc" name="Purchase order issued">
+      <bpmn:incoming>Flow_P6</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_P1" sourceRef="Start_Proc" targetRef="T_CreatePO" />
+    <bpmn:sequenceFlow id="Flow_P2" sourceRef="T_CreatePO" targetRef="T_ApprovePO" />
+    <bpmn:sequenceFlow id="Flow_P3" sourceRef="T_ApprovePO" targetRef="T_SendPO" />
+    <bpmn:sequenceFlow id="Flow_P4" sourceRef="B_Timer_PO" targetRef="T_EscalatePO" />
+    <bpmn:sequenceFlow id="Flow_P5" sourceRef="T_EscalatePO" targetRef="End_ProcEscalated" />
+    <bpmn:sequenceFlow id="Flow_P6" sourceRef="T_SendPO" targetRef="End_Proc" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="procurement">
+      <bpmndi:BPMNShape id="Start_Proc_di" bpmnElement="Start_Proc">
+        <dc:Bounds x="122" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="96" y="225" width="89" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_CreatePO_di" bpmnElement="T_CreatePO">
+        <dc:Bounds x="250" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_ApprovePO_di" bpmnElement="T_ApprovePO">
+        <dc:Bounds x="420" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="B_Timer_PO_di" bpmnElement="B_Timer_PO">
+        <dc:Bounds x="452" y="222" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="495" y="235" width="83" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_EscalatePO_di" bpmnElement="T_EscalatePO">
+        <dc:Bounds x="420" y="320" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_ProcEscalated_di" bpmnElement="End_ProcEscalated">
+        <dc:Bounds x="452" y="462" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="421" y="505" width="99" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T_SendPO_di" bpmnElement="T_SendPO">
+        <dc:Bounds x="590" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_Proc_di" bpmnElement="End_Proc">
+        <dc:Bounds x="782" y="182" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="757" y="225" width="87" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_P1_di" bpmnElement="Flow_P1">
+        <di:waypoint x="158" y="200" />
+        <di:waypoint x="250" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P2_di" bpmnElement="Flow_P2">
+        <di:waypoint x="350" y="200" />
+        <di:waypoint x="420" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P3_di" bpmnElement="Flow_P3">
+        <di:waypoint x="520" y="200" />
+        <di:waypoint x="590" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P4_di" bpmnElement="Flow_P4">
+        <di:waypoint x="470" y="258" />
+        <di:waypoint x="470" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P5_di" bpmnElement="Flow_P5">
+        <di:waypoint x="470" y="400" />
+        <di:waypoint x="470" y="462" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_P6_di" bpmnElement="Flow_P6">
+        <di:waypoint x="690" y="200" />
+        <di:waypoint x="782" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
