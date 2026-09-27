@@ -61,9 +61,10 @@ each model is valid for ZenBPM and for Camunda Modeler 8.
 
 5. Use only the supported elements. See `reference/supported-elements.md`.
    - The engine does not support these elements: Script Task, Manual Task,
-     Complex Gateway, Signal events, Conditional events, Escalation events,
-     Compensation events, message flow, data association, conditional flow,
-     loop marker, ad-hoc marker, and compensation marker.
+     Complex Gateway, None Intermediate Throw Event, Signal events, Conditional
+     events, Escalation events, Compensation events, message flow, data
+     association, conditional flow, loop marker, ad-hoc marker, and compensation
+     marker.
    - The engine puts an unsupported child element in `TProcess.UnknownElements`.
      Keep this list empty.
 
